@@ -50,8 +50,8 @@ inner_max, inner_min, final_max, final_min = level_presets(level)
 
 # ---------- Helpers ----------
 
-
 def redact_pii(text: str) -> str:
+    """Mask emails and phone numbers for privacy."""
     t = re.sub(r"[\w\.-]+@[\w\.-]+", "[redacted_email]", text)
     t = re.sub(r"\(?\d{3}\)?[-\s.]?\d{3}[-\s.]?\d{4}", "[redacted_phone]", t)
     return t
@@ -171,6 +171,7 @@ def map_reduce_summary(
     partials: List[str] = []
     for c in chunks:
         w = len(c.split())
+        # Slightly shorter summaries for short chunks
         if w <= 80:
             imax, imin = 80, 30
         elif w <= 160:
@@ -179,7 +180,6 @@ def map_reduce_summary(
             imax, imin = inner_max, inner_min
         partials.append(sm.summarize(c, max_length=imax, min_length=imin))
 
-    # drop empties
     partials = [p for p in partials if p.strip()]
     if not partials:
         return {"chunks": chunks, "partials": [], "combined": "", "final": ""}
@@ -196,7 +196,7 @@ def map_reduce_summary(
 
 
 def extract_text_from_file(uploaded_file) -> str:
-    """Read text from uploaded .txt or .pdf using pypdf (no PyMuPDF)."""
+    """Read text from uploaded .txt or .pdf using pypdf."""
     if uploaded_file is None:
         return ""
 
@@ -221,7 +221,6 @@ def extract_text_from_file(uploaded_file) -> str:
             st.error(f"Could not read PDF: {e}")
             return ""
 
-    # Fallback
     st.warning("Unsupported file type. Please upload a .txt or .pdf file.")
     return ""
 
@@ -229,7 +228,7 @@ def extract_text_from_file(uploaded_file) -> str:
 # ---------- UI ----------
 st.title("📝 Meeting Notes Agent")
 st.write(
-    "Paste or upload a meeting transcript and generate a clean summary with key points."
+    "Paste or upload a meeting transcript and generate a clean summary focused on key points."
 )
 
 input_mode = st.radio(
@@ -259,7 +258,7 @@ else:
         else:
             st.error("Could not read text from this file. Please try another.")
 
-if st.button("🚀 Generate Summary", type="primary"):
+if st.button("🚀 Generate Summary"):
     if not raw_text or not raw_text.strip():
         st.warning("Please paste text or upload a file before summarizing.")
     else:
@@ -281,14 +280,12 @@ if st.button("🚀 Generate Summary", type="primary"):
 
         st.subheader("✅ Final Summary")
         if final_summary:
-            # Bullet-ize like your Colab cell
             sentences = re.split(r"(?<=[.!?])\s+|\n", final_summary)
             bullets = [f"- {s.strip()}" for s in sentences if s.strip()]
             st.markdown("\n".join(bullets))
         else:
             st.info("No summary could be generated. Try a longer or clearer input.")
 
-        # Optional: show chunk summaries
         partials = result.get("partials", [])
         if partials:
             with st.expander("Show intermediate chunk summaries"):
