@@ -19,7 +19,7 @@ MODEL_NAME = st.sidebar.selectbox(
     "Summarizer model",
     options=[
         "facebook/bart-large-cnn",
-        "t5-small",
+        "sshleifer/distilbart-cnn-12-6",
     ],
     index=0,
     help="Use BART for higher quality (slower). Use T5-small for faster tests."
