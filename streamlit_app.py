@@ -1,8 +1,10 @@
-import streamlit as st
-from typing import List, Dict, Tuple
 import re
-import fitz  # PyMuPDF
+from io import BytesIO
+from typing import List, Dict, Tuple
+
+import streamlit as st
 from transformers import pipeline
+from pypdf import PdfReader
 
 # ---------- Page config ----------
 st.set_page_config(
@@ -17,7 +19,7 @@ MODEL_NAME = st.sidebar.selectbox(
     "Summarizer model",
     options=[
         "facebook/bart-large-cnn",
-        "t5-small"
+        "t5-small",
     ],
     index=0,
     help="Use BART for higher quality (slower). Use T5-small for faster tests."
@@ -34,6 +36,7 @@ APPLY_REDACTION = st.sidebar.checkbox(
     value=True
 )
 
+
 def level_presets(level: str) -> Tuple[int, int, int, int]:
     level = level.lower()
     if level == "brief":
@@ -42,55 +45,80 @@ def level_presets(level: str) -> Tuple[int, int, int, int]:
         return 200, 80, 300, 140
     return 140, 60, 220, 80  # standard
 
+
 inner_max, inner_min, final_max, final_min = level_presets(level)
 
 # ---------- Helpers ----------
+
+
 def redact_pii(text: str) -> str:
     t = re.sub(r"[\w\.-]+@[\w\.-]+", "[redacted_email]", text)
     t = re.sub(r"\(?\d{3}\)?[-\s.]?\d{3}[-\s.]?\d{4}", "[redacted_phone]", t)
     return t
 
+
 def simple_word_chunk(
     text: str,
     max_words: int = 350,
     overlap: int = 50,
-    max_chars: int = 1000
+    max_chars: int = 1000,
 ) -> List[str]:
+    """Split long text into overlapping chunks by words + char limit."""
     words = text.split()
     if not words:
         return []
-    chunks = []
+
+    chunks: List[str] = []
     start = 0
+
     while start < len(words):
         current_chunk_words = []
         current_chunk_chars = 0
+
         for i in range(start, len(words)):
             word = words[i]
             extra_space = 1 if current_chunk_chars > 0 else 0
-            if (len(current_chunk_words) >= max_words or
-                current_chunk_chars + len(word) + extra_space > max_chars):
+
+            # Stop if next word would break limits
+            if (
+                len(current_chunk_words) >= max_words
+                or current_chunk_chars + len(word) + extra_space > max_chars
+            ):
                 if not current_chunk_words:
+                    # Edge case: single huge word
                     current_chunk_words.append(word)
                 break
+
             current_chunk_words.append(word)
             current_chunk_chars += len(word) + extra_space
+
         if not current_chunk_words:
             break
+
         chunks.append(" ".join(current_chunk_words))
+
+        # Move start with overlap
         step = len(current_chunk_words) - overlap
         if step <= 0:
             step = len(current_chunk_words)
         start += step
+
+        # Safety: avoid infinite loop on tiny tails
         if start >= len(words) - overlap and len(current_chunk_words) <= overlap:
             start = len(words)
+
     return chunks
 
+
 def _add_task_prefix(text: str, model_name: str) -> str:
+    """Add T5-style 'summarize:' prefix when needed."""
     return f"summarize: {text}" if model_name.lower().startswith("t5") else text
+
 
 @st.cache_resource(show_spinner=False)
 def load_summarizer(model_name: str):
     return pipeline("summarization", model=model_name)
+
 
 class Summarizer:
     def __init__(self, model_name: str):
@@ -102,7 +130,7 @@ class Summarizer:
         text: str,
         max_length: int,
         min_length: int,
-        do_sample: bool = False
+        do_sample: bool = False,
     ) -> str:
         t = _add_task_prefix(text.strip(), self.model_name)
         if not t:
@@ -118,6 +146,7 @@ class Summarizer:
             return out[0]["summary_text"].strip()
         return str(out)
 
+
 def map_reduce_summary(
     text: str,
     model_name: str,
@@ -128,6 +157,7 @@ def map_reduce_summary(
     final_max: int,
     final_min: int,
 ) -> Dict[str, str]:
+    """Chunk → summarize each → combine → summarize again."""
     text = text.strip()
     if not text:
         return {"chunks": [], "partials": [], "combined": "", "final": ""}
@@ -149,6 +179,7 @@ def map_reduce_summary(
             imax, imin = inner_max, inner_min
         partials.append(sm.summarize(c, max_length=imax, min_length=imin))
 
+    # drop empties
     partials = [p for p in partials if p.strip()]
     if not partials:
         return {"chunks": chunks, "partials": [], "combined": "", "final": ""}
@@ -160,23 +191,40 @@ def map_reduce_summary(
         "chunks": chunks,
         "partials": partials,
         "combined": combined,
-        "final": final.strip()
+        "final": (final or "").strip(),
     }
 
+
 def extract_text_from_file(uploaded_file) -> str:
+    """Read text from uploaded .txt or .pdf using pypdf (no PyMuPDF)."""
     if uploaded_file is None:
         return ""
+
     name = uploaded_file.name.lower()
-    data = uploaded_file.read()
+
+    # Text file
     if name.endswith(".txt"):
+        data = uploaded_file.read()
         return data.decode("utf-8", errors="ignore")
+
+    # PDF file
     if name.endswith(".pdf"):
-        doc = fitz.open(stream=data, filetype="pdf")
-        text = ""
-        for page_num in range(doc.page_count):
-            text += doc.load_page(page_num).get_text()
-        return text
+        try:
+            data = uploaded_file.read()
+            reader = PdfReader(BytesIO(data))
+            text = ""
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                text += page_text + "\n"
+            return text.strip()
+        except Exception as e:
+            st.error(f"Could not read PDF: {e}")
+            return ""
+
+    # Fallback
+    st.warning("Unsupported file type. Please upload a .txt or .pdf file.")
     return ""
+
 
 # ---------- UI ----------
 st.title("📝 Meeting Notes Agent")
@@ -187,7 +235,7 @@ st.write(
 input_mode = st.radio(
     "How do you want to provide your content?",
     ("Paste text", "Upload file (.txt / .pdf)"),
-    horizontal=True
+    horizontal=True,
 )
 
 raw_text = ""
@@ -196,12 +244,12 @@ if input_mode == "Paste text":
     raw_text = st.text_area(
         "Paste your meeting transcript here:",
         height=260,
-        placeholder="Paste your Zoom transcript, meeting notes, or documentation..."
+        placeholder="Paste your Zoom transcript, meeting notes, or documentation...",
     )
 else:
     uploaded_file = st.file_uploader(
         "Upload a .txt or .pdf file",
-        type=["txt", "pdf"]
+        type=["txt", "pdf"],
     )
     if uploaded_file is not None:
         with st.spinner("Reading file..."):
@@ -231,17 +279,18 @@ if st.button("🚀 Generate Summary", type="primary"):
 
         final_summary = (result.get("final") or "").strip()
 
+        st.subheader("✅ Final Summary")
         if final_summary:
+            # Bullet-ize like your Colab cell
             sentences = re.split(r"(?<=[.!?])\s+|\n", final_summary)
             bullets = [f"- {s.strip()}" for s in sentences if s.strip()]
-
-            st.subheader("✅ Final Summary")
             st.markdown("\n".join(bullets))
-
-            partials = result.get("partials", [])
-            if partials:
-                with st.expander("Show intermediate chunk summaries"):
-                    for i, p in enumerate(partials, start=1):
-                        st.markdown(f"**Chunk {i}:** {p}")
         else:
-            st.error("No summary could be generated. Try a longer or clearer input.")
+            st.info("No summary could be generated. Try a longer or clearer input.")
+
+        # Optional: show chunk summaries
+        partials = result.get("partials", [])
+        if partials:
+            with st.expander("Show intermediate chunk summaries"):
+                for i, p in enumerate(partials, start=1):
+                    st.markdown(f"**Chunk {i}:** {p}")
