@@ -7,4 +7,6 @@
  Member 2 : Sreekari Chinta
  Member 3 : Andre Augustin
 
+ About the Agent : 
+
  Class : CSC 698 - Topics in Computing : Generative AI
