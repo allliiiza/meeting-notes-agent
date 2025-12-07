@@ -8,5 +8,6 @@
  Member 3 : Andre Augustin
 
  About the Agent : 
+ This is a meeting notes summarizer AI Agent. You can put in a pdf or type a paragraph or more in manually and get out a summary of what the document talks about or says.
 
  Class : CSC 698 - Topics in Computing : Generative AI
